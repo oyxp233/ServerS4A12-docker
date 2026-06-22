@@ -1,0 +1,191 @@
+name: Publish DfoServer
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  PROJECT: Server/DfoServer/DfoServer.csproj
+
+jobs:
+  publish:
+    name: ${{ matrix.rid }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            runs-on: windows-latest
+          - rid: linux-x64
+            runs-on: ubuntu-latest
+          - rid: linux-arm64
+            runs-on: ubuntu-latest
+          - rid: osx-x64
+            runs-on: macos-latest
+          - rid: osx-arm64
+            runs-on: macos-latest
+
+    runs-on: ${{ matrix.runs-on }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Publish
+        shell: bash
+        run: |
+          dotnet publish "$PROJECT" \
+            -c Release \
+            -r "${{ matrix.rid }}" \
+            --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:IncludeNativeLibrariesForSelfExtract=true \
+            -o publish/
+
+      - name: Bundle launcher script (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cp start-server.sh publish/
+          chmod +x publish/start-server.sh publish/DfoServer
+
+      - name: Bundle launcher script (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Copy-Item start-server.bat publish/
+
+      - name: Set package version
+        id: version
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create zip (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          zip_name="DfoServer-${{ steps.version.outputs.value }}-${{ matrix.rid }}.zip"
+          (cd publish && zip -r "../${zip_name}" .)
+          echo "ZIP_NAME=${zip_name}" >> "$GITHUB_ENV"
+
+      - name: Create zip (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $zipName = "DfoServer-${{ steps.version.outputs.value }}-${{ matrix.rid }}.zip"
+          Compress-Archive -Path publish\* -DestinationPath $zipName -Force
+          "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: dfo-server-${{ matrix.rid }}
+          path: ${{ env.ZIP_NAME }}
+          if-no-files-found: error
+
+  release:
+    name: Create release
+    needs: publish
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Set release metadata
+        id: meta
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            {
+              echo "tag=${GITHUB_REF_NAME}"
+              echo "name=DfoServer ${GITHUB_REF_NAME}"
+              echo "version=${GITHUB_REF_NAME}"
+              echo "prerelease=false"
+              echo "make_latest=true"
+              echo "rolling=false"
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "tag=dev"
+              echo "name=DfoServer dev (${GITHUB_SHA::7})"
+              echo "version=${GITHUB_SHA::7}"
+              echo "prerelease=true"
+              echo "make_latest=false"
+              echo "rolling=true"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Reset rolling dev release
+        if: steps.meta.outputs.rolling == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          tag="${{ steps.meta.outputs.tag }}"
+          gh release delete "$tag" --yes 2>/dev/null || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -fa "$tag" "${GITHUB_SHA}" -m "${{ steps.meta.outputs.version }}"
+          git push origin "refs/tags/${tag}" --force
+
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.name }}
+          prerelease: ${{ steps.meta.outputs.prerelease }}
+          make_latest: ${{ steps.meta.outputs.make_latest }}
+          generate_release_notes: true
+          body: |
+            Self-contained DfoServer build for **${{ steps.meta.outputs.version }}**.
+
+            | Platform | Archive |
+            | --- | --- |
+            | Windows x64 | `DfoServer-*-win-x64.zip` |
+            | Linux x64 | `DfoServer-*-linux-x64.zip` |
+            | Linux arm64 | `DfoServer-*-linux-arm64.zip` |
+            | macOS x64 | `DfoServer-*-osx-x64.zip` |
+            | macOS arm64 | `DfoServer-*-osx-arm64.zip` |
+
+            After extracting, place the client `Script.pvf` at `Data/Pvf/Script.pvf`, then run:
+
+            - Windows: `start-server.bat`
+            - macOS / Linux: `./start-server.sh`
+
+            Use `--server-ip auto` to advertise this machine's LAN IPv4 to the client.
+          files: dist/*.zip
+          fail_on_unmatched_files: true

@@ -35,7 +35,8 @@ if /I "%SERVER_IP%"=="auto" (
 )
 
 set "SERVER_EXE="
-if exist "%ROOT%dist\win-x64\DfoServer.exe" set "SERVER_EXE=%ROOT%dist\win-x64\DfoServer.exe"
+if exist "%ROOT%DfoServer.exe" set "SERVER_EXE=%ROOT%DfoServer.exe"
+if not defined SERVER_EXE if exist "%ROOT%dist\win-x64\DfoServer.exe" set "SERVER_EXE=%ROOT%dist\win-x64\DfoServer.exe"
 if not defined SERVER_EXE if exist "%ROOT%Server\DfoServer\bin\Debug\DfoServer.exe" set "SERVER_EXE=%ROOT%Server\DfoServer\bin\Debug\DfoServer.exe"
 
 if not defined SERVER_EXE (

@@ -63,11 +63,17 @@ detect_rid() {
 
 pick_server() {
   local rid="$1"
+  local local_binary="$ROOT/DfoServer"
   local published="$ROOT/dist/$rid/DfoServer"
   local dev_dll="$ROOT/Server/DfoServer/bin/Debug/DfoServer.dll"
 
+  if [[ -x "$local_binary" ]]; then
+    echo "local|$local_binary"
+    return 0
+  fi
+
   if [[ -x "$published" ]]; then
-    echo "$published"
+    echo "local|$published"
     return 0
   fi
 
@@ -139,7 +145,8 @@ if [[ "$TARGET" == dotnet\|* ]]; then
   DLL="${TARGET#dotnet|}"
   cd "$ROOT/Server/DfoServer/bin/Debug"
   run_server dotnet "$DLL"
+else
+  BIN="${TARGET#local|}"
+  cd "$(dirname "$BIN")"
+  run_server "./$(basename "$BIN")"
 fi
-
-cd "$ROOT/dist/$RID"
-run_server ./DfoServer
